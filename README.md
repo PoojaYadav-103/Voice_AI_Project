@@ -1,4 +1,4 @@
-# 🎙️ Real-Time Voice AI System – SniperThink Task
+# 🎙️ Voice AI . Let's Talk
 
 A complete, from-scratch, real-time bidirectional voice conversation system in the browser.
 No LiveKit, no Pipecat, no Retell – every layer built explicitly.
