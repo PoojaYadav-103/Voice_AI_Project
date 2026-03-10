@@ -1,0 +1,7 @@
+websockets==12.0
+openai==1.30.1
+numpy==1.26.4
+python-dotenv==1.0.1
+# RAG (optional but recommended)
+sentence-transformers==3.0.0
+faiss-cpu==1.8.0

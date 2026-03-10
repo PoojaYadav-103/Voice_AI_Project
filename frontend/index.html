@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Voice AI – SniperThink</title>
+<style>
+  /* ── Reset & base ─────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --border: #1e1e2e;
+    --accent: #6c63ff;
+    --accent2: #ff6584;
+    --text: #e8e8f0;
+    --muted: #6b6b8a;
+    --green: #50fa7b;
+    --red: #ff5555;
+    --yellow: #f1fa8c;
+  }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px;
+    gap: 24px;
+  }
+  h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.5px; }
+  h1 span { color: var(--accent); }
+
+  /* ── Status bar ───────────────────────────────── */
+  #status-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  #status-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.3s;
+  }
+  #status-dot.connected   { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  #status-dot.listening   { background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: pulse 1s infinite; }
+  #status-dot.processing  { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); }
+  #status-dot.speaking    { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); animation: pulse 0.6s infinite; }
+  #status-dot.error       { background: var(--red); }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; } 50% { opacity: 0.4; }
+  }
+
+  /* ── Main orb button ──────────────────────────── */
+  #orb-wrap { position: relative; display: flex; align-items: center; justify-content: center; }
+  #orb {
+    width: 120px; height: 120px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #9580ff, #6c63ff 60%, #3d35a0);
+    border: none; cursor: pointer;
+    box-shadow: 0 0 0 0 rgba(108,99,255,0.4);
+    transition: transform 0.15s, box-shadow 0.3s;
+    position: relative;
+  }
+  #orb:hover { transform: scale(1.05); }
+  #orb:disabled { opacity: 0.4; cursor: not-allowed; }
+  #orb.active {
+    animation: orbPulse 1.4s ease-in-out infinite;
+  }
+  @keyframes orbPulse {
+    0%   { box-shadow: 0 0 0 0 rgba(108,99,255,0.5); }
+    70%  { box-shadow: 0 0 0 30px rgba(108,99,255,0); }
+    100% { box-shadow: 0 0 0 0 rgba(108,99,255,0); }
+  }
+  #orb svg { width: 44px; height: 44px; fill: white; }
+
+  /* ── Waveform canvas ──────────────────────────── */
+  #waveform-canvas {
+    width: 100%; max-width: 500px; height: 60px;
+    border-radius: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+
+  /* ── Conversation log ─────────────────────────── */
+  #conversation {
+    width: 100%; max-width: 640px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 16px;
+    display: flex; flex-direction: column; gap: 12px;
+    max-height: 360px; overflow-y: auto;
+  }
+  .msg { display: flex; gap: 10px; animation: fadeIn 0.2s; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
+  .msg .avatar {
+    width: 32px; height: 32px; border-radius: 50%;
+    display: grid; place-items: center; font-size: 0.75rem;
+    flex-shrink: 0;
+  }
+  .msg.user .avatar  { background: #3d35a0; }
+  .msg.ai   .avatar  { background: #2a2a3e; border: 1px solid var(--accent); }
+  .msg .bubble {
+    background: #1a1a28;
+    border-radius: 12px;
+    padding: 10px 14px;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    max-width: 85%;
+  }
+  .msg.user .bubble { background: #1e1a40; }
+  .msg .label { font-size: 0.7rem; color: var(--muted); margin-bottom: 4px; }
+
+  /* ── Latency badge ────────────────────────────── */
+  #latency-bar {
+    display: flex; gap: 16px;
+    font-size: 0.78rem; color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 8px 18px;
+  }
+  .lat-item span { color: var(--text); font-weight: 600; }
+
+  /* ── Controls row ─────────────────────────────── */
+  #controls {
+    display: flex; gap: 12px; align-items: center;
+  }
+  .btn {
+    padding: 10px 22px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text);
+    font-size: 0.85rem; cursor: pointer; transition: background 0.2s, border-color 0.2s;
+  }
+  .btn:hover { background: #1e1e2e; border-color: var(--accent); }
+  .btn.danger { color: var(--red); border-color: var(--red); }
+  .btn.danger:hover { background: rgba(255,85,85,0.1); }
+  #ws-url-input {
+    padding: 10px 14px; border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface); color: var(--text);
+    font-size: 0.85rem; width: 260px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Voice AI <span>·</span> SniperThink</h1>
+
+<!-- Connection status -->
+<div id="status-bar">
+  <div id="status-dot"></div>
+  <span id="status-text">Disconnected</span>
+</div>
+
+<!-- WS URL + connect -->
+<div id="controls">
+  <input id="ws-url-input" type="text" value="ws://localhost:8765" placeholder="ws://host:port"/>
+  <button class="btn" id="connect-btn" onclick="connectWS()">Connect</button>
+  <button class="btn danger" id="disconnect-btn" onclick="disconnectWS()" disabled>Disconnect</button>
+</div>
+
+<!-- Mic orb -->
+<div id="orb-wrap">
+  <button id="orb" disabled onclick="toggleMic()">
+    <!-- Mic icon -->
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 1a4 4 0 0 1 4 4v6a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm6.5 9a1 1 0 0 1 1 1 7.5 7.5 0 0 1-15 0 1 1 0 0 1 2 0 5.5 5.5 0 0 0 11 0 1 1 0 0 1 1-1zM11 21h-2a1 1 0 0 1 0-2h2v-1.05a1 1 0 0 1 2 0V19h2a1 1 0 0 1 0 2h-2v1a1 1 0 0 1-2 0v-1z"/>
+    </svg>
+  </button>
+</div>
+
+<!-- Waveform -->
+<canvas id="waveform-canvas"></canvas>
+
+<!-- Latency display -->
+<div id="latency-bar">
+  <div class="lat-item">STT: <span id="lat-stt">–</span></div>
+  <div class="lat-item">LLM: <span id="lat-llm">–</span></div>
+  <div class="lat-item">E2E: <span id="lat-e2e">–</span></div>
+</div>
+
+<!-- Conversation log -->
+<div id="conversation">
+  <div class="msg ai">
+    <div class="avatar">🤖</div>
+    <div class="bubble">
+      <div class="label">AI</div>
+      Connect to the server and press the mic button to start talking!
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════ -->
+<script>
+// ────────────────────────────────────────────────
+// State
+// ────────────────────────────────────────────────
+let ws = null;
+let mediaStream = null;
+let audioContext = null;
+let processor = null;
+let analyser = null;
+let micActive = false;
+let isRecording = false;
+let sessionStart = 0;
+
+// Latency tracking
+let speechStartTime = 0;
+let processingStartTime = 0;
+
+// TTS playback queue (PCM chunks)
+const TTS_SAMPLE_RATE = 24000; // OpenAI TTS PCM output
+let audioQueue = [];
+let isPlaying = false;
+let playbackCtx = null;
+let nextPlayTime = 0;
+
+// VAD config
+const SILENCE_THRESHOLD = 0.01;
+const SILENCE_DURATION_MS = 700;
+let silenceTimer = null;
+let isSpeaking = false;
+
+// Canvas waveform
+const canvas = document.getElementById('waveform-canvas');
+const ctx2d = canvas.getContext('2d');
+let waveformData = new Uint8Array(128).fill(128);
+let animFrameId = null;
+
+
+// ────────────────────────────────────────────────
+// WebSocket
+// ────────────────────────────────────────────────
+function connectWS() {
+  const url = document.getElementById('ws-url-input').value.trim();
+  ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    setStatus('connected', 'Connected');
+    document.getElementById('orb').disabled = false;
+    document.getElementById('disconnect-btn').disabled = false;
+    document.getElementById('connect-btn').disabled = true;
+    initPlaybackContext();
+    startWaveformLoop();
+  };
+
+  ws.onclose = () => {
+    setStatus('', 'Disconnected');
+    document.getElementById('orb').disabled = true;
+    document.getElementById('disconnect-btn').disabled = true;
+    document.getElementById('connect-btn').disabled = false;
+    stopMic();
+  };
+
+  ws.onerror = () => setStatus('error', 'Connection error');
+
+  ws.onmessage = (evt) => {
+    if (evt.data instanceof ArrayBuffer) {
+      // Raw PCM audio from TTS
+      handleTTSAudio(evt.data);
+    } else {
+      handleControlEvent(JSON.parse(evt.data));
+    }
+  };
+}
+
+function disconnectWS() {
+  stopMic();
+  if (ws) { ws.close(); ws = null; }
+}
+
+function handleControlEvent(evt) {
+  switch (evt.type) {
+    case 'session_started':
+      appendMsg('ai', `Session started (id: ${evt.session_id.slice(0,8)}…)`);
+      break;
+    case 'speech_started':
+      setStatus('listening', 'Listening…');
+      speechStartTime = Date.now();
+      break;
+    case 'processing_started':
+      processingStartTime = Date.now();
+      setStatus('processing', 'Processing…');
+      break;
+    case 'transcript':
+      appendMsg('user', evt.text);
+      break;
+    case 'tts_start':
+      setStatus('speaking', 'Speaking…');
+      if (processingStartTime) {
+        const e2e = Date.now() - speechStartTime;
+        const llm = Date.now() - processingStartTime;
+        document.getElementById('lat-llm').textContent = llm + 'ms';
+        document.getElementById('lat-e2e').textContent = e2e + 'ms';
+      }
+      break;
+    case 'response_complete':
+      appendMsg('ai', evt.text);
+      setStatus('connected', 'Connected');
+      break;
+    case 'interrupted':
+      setStatus('listening', 'Listening…');
+      clearAudioQueue();
+      break;
+    case 'error':
+      appendMsg('ai', `⚠️ Error: ${evt.message}`);
+      setStatus('connected', 'Connected');
+      break;
+    case 'pong':
+      break;
+  }
+}
+
+
+// ────────────────────────────────────────────────
+// Microphone capture
+// ────────────────────────────────────────────────
+async function toggleMic() {
+  if (!micActive) {
+    await startMic();
+  } else {
+    stopMic();
+  }
+}
+
+async function startMic() {
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        sampleRate: 16000,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      }
+    });
+
+    audioContext = new AudioContext({ sampleRate: 16000 });
+    const source = audioContext.createMediaStreamSource(mediaStream);
+
+    // Analyser for waveform visualisation
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+
+    // ScriptProcessor for sending PCM to backend
+    // (AudioWorklet is better but ScriptProcessor simpler for demo)
+    processor = audioContext.createScriptProcessor(1024, 1, 1);
+    analyser.connect(processor);
+    processor.connect(audioContext.destination);
+
+    processor.onaudioprocess = (e) => {
+      const float32 = e.inputBuffer.getChannelData(0);
+      const pcm16 = float32ToPcm16(float32);
+      handleLocalVAD(float32);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(pcm16.buffer);
+      }
+    };
+
+    micActive = true;
+    document.getElementById('orb').classList.add('active');
+    setStatus('listening', 'Listening…');
+
+  } catch (err) {
+    alert('Microphone access denied: ' + err.message);
+  }
+}
+
+function stopMic() {
+  micActive = false;
+  isSpeaking = false;
+  if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+  if (processor) { processor.disconnect(); processor = null; }
+  if (analyser) { analyser.disconnect(); analyser = null; }
+  if (audioContext) { audioContext.close(); audioContext = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  document.getElementById('orb').classList.remove('active');
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    setStatus('connected', 'Connected');
+  }
+}
+
+// Local VAD for interruption detection
+function handleLocalVAD(float32) {
+  const rms = Math.sqrt(float32.reduce((s, v) => s + v * v, 0) / float32.length);
+  const speaking = rms > SILENCE_THRESHOLD;
+
+  if (speaking) {
+    if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+    if (!isSpeaking) {
+      isSpeaking = true;
+      // If AI is currently playing audio → interrupt
+      if (isPlaying) {
+        sendEvent({ type: 'interrupt' });
+        clearAudioQueue();
+      }
+    }
+  } else {
+    if (isSpeaking && !silenceTimer) {
+      silenceTimer = setTimeout(() => {
+        isSpeaking = false;
+        silenceTimer = null;
+        sendEvent({ type: 'end_of_speech' });
+      }, SILENCE_DURATION_MS);
+    }
+  }
+}
+
+function sendEvent(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
+  }
+}
+
+
+/// ────────────────────────────────────────────────
+// TTS audio playback
+// ────────────────────────────────────────────────
+function initPlaybackContext() {
+  isPlaying = false;
+  audioQueue = [];
+}
+
+function handleTTSAudio(arrayBuffer) {
+  audioQueue.push(arrayBuffer);
+  if (!isPlaying) playNextMP3Chunk();
+}
+
+async function playNextMP3Chunk() {
+  if (audioQueue.length === 0) {
+    isPlaying = false;
+    return;
+  }
+  isPlaying = true;
+  const chunks = [...audioQueue];
+  audioQueue = [];
+
+  const totalLength = chunks.reduce((acc, c) => acc + c.byteLength, 0);
+  const combined = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(new Uint8Array(chunk), offset);
+    offset += chunk.byteLength;
+  }
+
+  try {
+    const blob = new Blob([combined], { type: 'audio/mpeg' });
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      isPlaying = false;
+      if (audioQueue.length > 0) playNextMP3Chunk();
+    };
+    await audio.play();
+  } catch(e) {
+    console.error('Audio play error:', e);
+    isPlaying = false;
+  }
+}
+
+function clearAudioQueue() {
+  audioQueue = [];
+  isPlaying = false;
+}
+
+// ────────────────────────────────────────────────
+// Waveform visualisation
+// ────────────────────────────────────────────────
+function startWaveformLoop() {
+  if (animFrameId) cancelAnimationFrame(animFrameId);
+  function draw() {
+    animFrameId = requestAnimationFrame(draw);
+    const W = canvas.width = canvas.offsetWidth;
+    const H = canvas.height = canvas.offsetHeight;
+    ctx2d.clearRect(0, 0, W, H);
+
+    if (analyser) {
+      waveformData = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteTimeDomainData(waveformData);
+    }
+
+    ctx2d.beginPath();
+    ctx2d.strokeStyle = micActive ? '#6c63ff' : '#2a2a3e';
+    ctx2d.lineWidth = 2;
+    const sliceW = W / waveformData.length;
+    let x = 0;
+    for (let i = 0; i < waveformData.length; i++) {
+      const v = waveformData[i] / 128;
+      const y = (v * H) / 2;
+      i === 0 ? ctx2d.moveTo(x, y) : ctx2d.lineTo(x, y);
+      x += sliceW;
+    }
+    ctx2d.lineTo(W, H / 2);
+    ctx2d.stroke();
+  }
+  draw();
+}
+
+
+// ────────────────────────────────────────────────
+// Helpers
+// ────────────────────────────────────────────────
+function float32ToPcm16(float32) {
+  const pcm16 = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32[i]));
+    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return pcm16;
+}
+
+function setStatus(cls, text) {
+  const dot = document.getElementById('status-dot');
+  const label = document.getElementById('status-text');
+  dot.className = cls;
+  label.textContent = text;
+}
+
+function appendMsg(role, text) {
+  const conv = document.getElementById('conversation');
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.innerHTML = `
+    <div class="avatar">${role === 'user' ? '🧑' : '🤖'}</div>
+    <div class="bubble">
+      <div class="label">${role === 'user' ? 'You' : 'AI'}</div>
+      ${escapeHtml(text)}
+    </div>`;
+  conv.appendChild(div);
+  conv.scrollTop = conv.scrollHeight;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>
