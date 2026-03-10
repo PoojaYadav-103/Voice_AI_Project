@@ -1,7 +1,13 @@
 # 🎙️ Voice AI . Let's Talk
 
-A complete, from-scratch, real-time bidirectional voice conversation system in the browser.
-No LiveKit, no Pipecat, no Retell – every layer built explicitly.
+A real-time, bidirectional voice conversation system that runs entirely in the browser. Built from scratch without using any managed voice AI platforms like LiveKit, Pipecat, Retell, or VAPI.
+
+---
+
+## Live Demo
+
+- Frontend: Open `frontend/index.html` in any browser
+- Backend: Run via Google Colab (see setup instructions below)
 
 ---
 
@@ -9,146 +15,124 @@ No LiveKit, no Pipecat, no Retell – every layer built explicitly.
 
 ```
 Browser (index.html)
-  │
-  │  PCM16 audio chunks (binary WebSocket frames)
-  │  JSON control events  (text WebSocket frames)
-  ▼
+        |
+        |  PCM16 audio chunks  (binary WebSocket frames)
+        |  JSON control events (text WebSocket frames)
+        v
 WebSocket Gateway (server.py)
-  │  per-connection session
-  ▼
+        |
+        v
 VoicePipeline (pipeline.py)
-  ├── VAD  (numpy RMS thresholding)
-  ├── STT  (OpenAI Whisper API)
-  ├── RAG  (optional – FAISS + sentence-transformers)
-  ├── LLM  (OpenAI GPT-4o-mini, streaming)
-  └── TTS  (OpenAI TTS-1 → raw PCM → WebSocket)
+        |
+        |-- VAD       (numpy RMS thresholding)
+        |-- STT       (Groq Whisper large-v3-turbo)
+        |-- RAG       (optional - FAISS + sentence-transformers)
+        |-- LLM       (Groq LLaMA 3.3 70B, streaming)
+        |-- TTS       (gTTS - Google Text to Speech)
+        |
+        v
+Browser Audio Playback (Web Audio API)
 ```
 
-### Data Flow (happy path)
+---
 
-```
-Mic → PCM16 chunks → WebSocket → VAD
-                                  │ speech detected
-                                  ▼
-                               Whisper STT  (100-400ms)
-                                  │
-                               RAG retrieval (optional, ~50ms)
-                                  │
-                               LLM streaming (first token ~200-400ms)
-                                  │ sentence complete
-                               TTS streaming (first audio ~300-500ms)
-                                  │
-                               WebSocket → Browser AudioContext playback
-```
+## How It Works
+
+### 1. Audio Capture
+The browser captures microphone input using `getUserMedia` with noise cancellation and echo suppression enabled. Audio is captured as raw PCM16 at 16kHz sample rate.
+
+### 2. Streaming to Backend
+Audio chunks are sent as binary WebSocket frames in real time. No batching, no base64 encoding. This keeps overhead minimal and latency low.
+
+### 3. Voice Activity Detection
+Two layers of VAD are used:
+
+- **Backend VAD** - numpy RMS calculation detects end of speech after 700ms of silence and triggers the STT pipeline
+- **Frontend VAD** - same RMS logic in JavaScript detects when user starts speaking while AI is talking and sends an interrupt signal immediately
+
+### 4. Speech to Text
+Groq Whisper large-v3-turbo converts the captured audio to text. Average latency is 300-400ms.
+
+### 5. RAG (Optional)
+If a knowledge base is loaded, FAISS vector search finds the most relevant context chunks using sentence-transformers embeddings. This context is injected into the LLM prompt.
+
+### 6. LLM Response
+Groq LLaMA 3.3 70B generates a response with streaming enabled. Responses are flushed sentence by sentence as soon as a punctuation boundary is detected, rather than waiting for the full response.
+
+### 7. Text to Speech
+Each sentence is immediately converted to MP3 audio using gTTS and streamed back to the browser via WebSocket binary frames.
+
+### 8. Audio Playback
+The browser receives MP3 chunks, combines them using the Web Audio API and plays them back in real time.
 
 ---
 
 ## Design Decisions
 
-### 1. WebSocket binary framing
-Raw PCM16 bytes are sent as WebSocket binary frames (not base64).
-This eliminates ~33% overhead and reduces serialization latency.
+### Why WebSocket binary frames for audio
+Raw PCM bytes sent as binary WebSocket frames avoid the 33% size overhead of base64 encoding and eliminate serialization latency.
 
-### 2. Voice Activity Detection (VAD) – two layers
-- **Backend VAD**: numpy RMS. Detects end-of-speech after 700ms silence → triggers STT.
-- **Frontend VAD**: same RMS logic in JS. Detects user speaking while AI is talking → sends `interrupt` event immediately without a round-trip.
+### Why sentence level TTS flushing
+Instead of waiting for the full LLM response before starting TTS, each sentence is sent to TTS as soon as it is complete. This means the first audio plays within 1 second of the LLM starting to respond rather than waiting for the entire reply.
 
-### 3. Sentence-level TTS streaming
-Instead of waiting for the full LLM response, we flush TTS per sentence.
-The first audio chunk plays ~300-500ms after the first sentence ends, not after the full reply.
+### Why two layers of VAD
+Backend VAD handles the normal end of speech detection. Frontend VAD handles interruptions instantly without a round trip to the server. When the user starts speaking while the AI is talking, the frontend immediately stops audio playback and sends an interrupt event.
 
-### 4. Interruption handling
-On `interrupt`:
-- Frontend stops playback immediately (AudioContext re-init).
-- Backend cancels the running asyncio TTS/LLM tasks.
-- State resets to IDLE so the next utterance starts cleanly.
-
-### 5. Conversation memory
-Last 20 turns kept in memory per session. System prompt is always kept.
-
-### 6. RAG (optional)
-FAISS `IndexFlatIP` with normalized embeddings = cosine similarity.
-`all-MiniLM-L6-v2` (22MB) embedded locally — no external vector DB.
+### Why Groq instead of OpenAI
+Groq provides free API access with extremely fast inference. Whisper large-v3-turbo on Groq is faster and cheaper than OpenAI Whisper for this use case.
 
 ---
 
-## Latency Considerations
+## Latency Breakdown
 
-| Stage           | Typical Latency |
-|----------------|----------------|
-| VAD detection   | <50ms           |
-| Whisper STT     | 100-400ms       |
-| LLM first token | 200-400ms       |
-| TTS first audio | 300-500ms       |
-| **Total E2E**   | **700-1400ms**  |
-
-### Optimizations applied
-- PCM binary frames (no base64)
-- Sentence-level TTS flushing (don't wait for full response)
-- `tts-1` model (faster, lower quality) vs `tts-1-hd`
-- `gpt-4o-mini` (fast, cheap) as default LLM
-- `max_tokens=150` cap on LLM output
+| Stage | Typical Latency |
+|---|---|
+| VAD detection | less than 50ms |
+| Whisper STT via Groq | 300 - 400ms |
+| LLaMA 3.3 70B first token | 200 - 400ms |
+| gTTS first audio | 300 - 500ms |
+| Total end to end | 800 - 1400ms |
 
 ---
 
 ## Known Trade-offs
 
-| Trade-off | Decision |
-|-----------|----------|
-| Whisper vs streaming STT | Whisper is batch; streaming STT (Deepgram/AssemblyAI) would reduce STT latency by 200-300ms but requires another API |
-| ScriptProcessor vs AudioWorklet | ScriptProcessor is deprecated but simpler; AudioWorklet is the modern API |
-| In-memory RAG vs persistent DB | FAISS in-process is fast but not persistent across restarts; add `.save()/.load()` for persistence |
-| Single process vs multi-worker | Current server handles N concurrent sessions but is single-process; add gunicorn/uvicorn workers for production |
+| Trade-off | Decision Made |
+|---|---|
+| Batch STT vs streaming STT | Using batch Whisper. Streaming STT like Deepgram would reduce latency by 200ms but requires a paid API |
+| gTTS vs OpenAI TTS | gTTS is free but slightly robotic. OpenAI TTS-1 is more natural but requires billing |
+| ScriptProcessor vs AudioWorklet | ScriptProcessor used for simplicity. AudioWorklet is the modern standard but more complex to implement |
+| In memory RAG vs persistent DB | FAISS runs in process for speed. Not persistent across server restarts |
+| Single process vs multi worker | Current server handles multiple concurrent sessions in one process. Production would need multiple workers |
 
 ---
 
-## Quickstart (Local)
+## Tech Stack
 
-```bash
-# 1. Install backend deps
-cd backend
-pip install -r requirements.txt
-
-# 2. Set env vars
-cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
-
-# 3. Start server
-python server.py
-
-# 4. Open frontend
-# Double-click frontend/index.html in your browser
-# OR: python -m http.server 3000 (from frontend/ dir)
-
-# 5. In the browser
-# - URL: ws://localhost:8765
-# - Click Connect
-# - Click the mic orb and talk
-```
+| Component | Technology |
+|---|---|
+| WebSocket server | Python websockets library |
+| Speech to Text | Groq Whisper large-v3-turbo |
+| Language Model | Groq LLaMA 3.3 70B |
+| Text to Speech | gTTS (Google Text to Speech) |
+| Vector search | FAISS + sentence-transformers |
+| Frontend | Vanilla HTML, CSS, JavaScript |
+| Tunnel | Cloudflare Tunnel |
 
 ---
 
-## Quickstart (Google Colab)
-
-Open `notebooks/VoiceAI_SniperThink_Backend.ipynb` in Google Colab.
-Run cells 1-6. After Step 5 you get a public `wss://` URL.
-Paste it into the frontend and click Connect.
-
----
-
-## File Structure
+## Project Structure
 
 ```
 voice-ai/
 ├── backend/
-│   ├── server.py          # WebSocket gateway
+│   ├── server.py          # WebSocket gateway and session handling
 │   ├── pipeline.py        # STT + LLM + TTS orchestration
 │   ├── session.py         # Session manager
-│   ├── rag.py             # RAG retriever (FAISS)
-│   ├── requirements.txt
-│   └── .env.example
+│   ├── rag.py             # RAG retriever using FAISS
+│   └── requirements.txt
 ├── frontend/
-│   └── index.html         # Complete browser client (single file)
+│   └── index.html         # Complete browser client
 ├── notebooks/
 │   └── VoiceAI_SniperThink_Backend.ipynb
 └── README.md
@@ -156,21 +140,78 @@ voice-ai/
 
 ---
 
-## Bonus: RAG Usage
+## Setup Instructions
+
+### Option 1 - Google Colab (Recommended)
+
+1. Open `notebooks/VoiceAI_SniperThink_Backend.ipynb` in Google Colab
+2. Run all cells from top to bottom
+3. Add your Groq API key when prompted
+4. Copy the Cloudflare tunnel URL that is generated
+5. Open `frontend/index.html` in your browser
+6. Paste the tunnel URL and click Connect
+
+### Option 2 - Local Setup
+
+```bash
+cd backend
+pip install -r requirements.txt
+pip install groq gtts
+
+# Set environment variables
+export GROQ_API_KEY=your_groq_api_key
+export LLM_MODEL=llama-3.3-70b-versatile
+
+# Start server
+python server.py
+```
+
+Then open `frontend/index.html` in your browser and connect to `ws://localhost:8765`
+
+---
+
+## Environment Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| GROQ_API_KEY | Your Groq API key | Required |
+| LLM_MODEL | Groq model to use | llama-3.3-70b-versatile |
+| TTS_VOICE | Voice for TTS | alloy |
+| PORT | WebSocket server port | 8765 |
+
+---
+
+## RAG Usage
 
 ```python
-from rag import RAGRetriever, load_text_file
+from rag import RAGRetriever
 
-# From a text file
-retriever = load_text_file("my_knowledge_base.txt", chunk_size=500)
-
-# Or add docs manually
 retriever = RAGRetriever()
 retriever.add_documents([
-    {"id": "1", "text": "Your product description here."},
-    {"id": "2", "text": "FAQ content here."},
+    {"id": "1", "text": "Your knowledge base content here."},
+    {"id": "2", "text": "More content here."},
 ])
 
 # Attach to pipeline
 pipeline._rag_retriever = retriever
 ```
+
+---
+
+## Constraints Met
+
+- No LiveKit
+- No Pipecat
+- No Daily.co
+- No Retell AI
+- No VAPI
+- No Omnidim
+- No Bolna
+- All core voice infrastructure built from scratch
+
+---
+
+## Author
+
+Pooja Yadav
+GitHub: https://github.com/PoojaYadav-103/Voice_AI_Project
